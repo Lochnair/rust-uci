@@ -8,37 +8,38 @@ extern crate cmake;
 use std::path::PathBuf;
 use std::{env, fs};
 
+fn compiler_output(compiler: &cc::Tool, argument: &str) -> Option<String> {
+    let mut command = compiler.to_command();
+    command.arg(argument);
+
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
 fn configure_bindgen_target(mut builder: bindgen::Builder) -> bindgen::Builder {
     let host = env::var("HOST").expect("Cargo did not set HOST");
-    let cargo_target = env::var("TARGET").expect("Cargo did not set TARGET");
+    let target = env::var("TARGET").expect("Cargo did not set TARGET");
 
-    let bindgen_target = env::var("BINDGEN_TARGET").unwrap_or_else(|_| cargo_target.clone());
-
-    if bindgen_target == host {
+    if host == target {
         return builder;
     }
 
+    let compiler = cc::Build::new().target(&target).get_compiler();
+    let bindgen_target = env::var("BINDGEN_TARGET")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| compiler_output(&compiler, "-dumpmachine"))
+        .unwrap_or(target);
     builder = builder.clang_arg(format!("--target={bindgen_target}"));
 
-    let compiler = cc::Build::new().target(&cargo_target).get_compiler();
-
-    let mut command = compiler.to_command();
-    command.arg("-print-sysroot");
-
-    match command.output() {
-        Ok(output) if output.status.success() => {
-            let sysroot = String::from_utf8_lossy(&output.stdout);
-            let sysroot = sysroot.trim();
-
-            if !sysroot.is_empty() {
-                builder = builder.clang_arg(format!("--sysroot={sysroot}"));
-            }
-        }
-        _ => {
-            // Some toolchains do not expose a sysroot this way.
-            // Bindgen may still work, or the caller can provide
-            // BINDGEN_EXTRA_CLANG_ARGS_<TARGET>.
-        }
+    if let Some(sysroot) = compiler_output(&compiler, "-print-sysroot") {
+        builder = builder.clang_arg(format!("--sysroot={sysroot}"));
     }
 
     builder
@@ -71,23 +72,52 @@ fn main() {
             }
         }
         true => {
-            // otherwise build libuci & libubox from source
-            let libubox = cmake::Config::new("libubox")
+            let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+            let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+
+            let json_c_out = out_dir.join("json-c");
+            let json_c = cmake::Config::new(manifest_dir.join("json-c"))
+                .out_dir(&json_c_out)
+                .define("BUILD_SHARED_LIBS", "OFF")
+                .define("BUILD_STATIC_LIBS", "ON")
+                .define("BUILD_TESTING", "OFF")
+                .define("BUILD_APPS", "OFF")
+                .define("DISABLE_WERROR", "ON")
+                .define("DISABLE_EXTRA_LIBS", "ON")
+                .define("CMAKE_INSTALL_LIBDIR", "lib")
+                .define("CMAKE_INSTALL_INCLUDEDIR", "include")
+                .build();
+
+            let json_c_library_dir = json_c.join("lib");
+            let json_c_pkgconfig_dir = json_c_library_dir.join("pkgconfig");
+            let libubox_source = manifest_dir.join("libubox");
+            let libubox_out = out_dir.join("libubox");
+            let libubox_build = libubox_out.join("build");
+            cmake::Config::new(&libubox_source)
+                .out_dir(&libubox_out)
                 .define("BUILD_LUA", "OFF")
                 .define("BUILD_EXAMPLES", "OFF")
-                // Required to build with newer CMake versions (e.g., on Arch Linux)
+                .build_target("ubox")
+                .env("PKG_CONFIG_PATH", "")
+                .env("PKG_CONFIG_LIBDIR", &json_c_pkgconfig_dir)
+                .env("PKG_CONFIG_SYSROOT_DIR", "")
+                .define("CMAKE_LIBRARY_PATH", &json_c_library_dir)
                 .env("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
                 .build();
-            let libuci = cmake::Config::new("uci")
+
+            let libuci_out = out_dir.join("libuci");
+            let libuci = cmake::Config::new(manifest_dir.join("uci"))
+                .out_dir(&libuci_out)
                 .define("BUILD_LUA", "OFF")
                 .define("BUILD_STATIC", "OFF")
-                .define(
-                    "ubox_include_dir",
-                    libubox.join("include").as_path().display().to_string(),
-                )
+                .define("ubox_include_dir", &manifest_dir)
+                .define("CMAKE_LIBRARY_PATH", &libubox_build)
                 .build();
+
+            println!("cargo:rustc-link-search=native={}", libubox_build.display());
             println!("cargo:rustc-link-search=native={}/lib", libuci.display());
-            builder = builder.clang_arg(format!("-I{}/include", libuci.display()))
+
+            builder = builder.clang_arg(format!("-I{}/include", libuci.display()));
         }
     }
 

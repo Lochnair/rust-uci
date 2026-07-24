@@ -6,3 +6,7 @@
 	path = libuci-sys/uci
 	url = https://git.openwrt.org/project/uci.git
 	ignore = all
+[submodule "libuci-sys/json-c"]
+	path = libuci-sys/json-c
+	url = https://github.com/json-c/json-c.git
+	ignore = all
