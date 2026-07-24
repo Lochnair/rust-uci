@@ -8,6 +8,42 @@ extern crate cmake;
 use std::path::PathBuf;
 use std::{env, fs};
 
+fn configure_bindgen_target(mut builder: bindgen::Builder) -> bindgen::Builder {
+    let host = env::var("HOST").expect("Cargo did not set HOST");
+    let cargo_target = env::var("TARGET").expect("Cargo did not set TARGET");
+
+    let bindgen_target = env::var("BINDGEN_TARGET").unwrap_or_else(|_| cargo_target.clone());
+
+    if bindgen_target == host {
+        return builder;
+    }
+
+    builder = builder.clang_arg(format!("--target={bindgen_target}"));
+
+    let compiler = cc::Build::new().target(&cargo_target).get_compiler();
+
+    let mut command = compiler.to_command();
+    command.arg("-print-sysroot");
+
+    match command.output() {
+        Ok(output) if output.status.success() => {
+            let sysroot = String::from_utf8_lossy(&output.stdout);
+            let sysroot = sysroot.trim();
+
+            if !sysroot.is_empty() {
+                builder = builder.clang_arg(format!("--sysroot={sysroot}"));
+            }
+        }
+        _ => {
+            // Some toolchains do not expose a sysroot this way.
+            // Bindgen may still work, or the caller can provide
+            // BINDGEN_EXTRA_CLANG_ARGS_<TARGET>.
+        }
+    }
+
+    builder
+}
+
 fn main() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
     let vendored_build = env::var_os("CARGO_FEATURE_VENDORED").is_some();
@@ -18,11 +54,7 @@ fn main() {
         return;
     }
 
-    let mut builder = bindgen::Builder::default();
-    // if BINDGEN_TARGET is set it instructs the target bindgen is built for
-    if let Ok(bindgen_target) = env::var("BINDGEN_TARGET") {
-        builder = builder.clang_arg(format!("--target={}", bindgen_target));
-    }
+    let mut builder = configure_bindgen_target(bindgen::Builder::default());
 
     match vendored_build {
         false => {
