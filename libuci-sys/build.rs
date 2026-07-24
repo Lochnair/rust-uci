@@ -5,7 +5,9 @@
 extern crate bindgen;
 extern crate cmake;
 
+use std::ffi::OsString;
 use std::path::PathBuf;
+use std::process::Command;
 use std::{env, fs};
 
 fn compiler_output(compiler: &cc::Tool, argument: &str) -> Option<String> {
@@ -45,9 +47,58 @@ fn configure_bindgen_target(mut builder: bindgen::Builder) -> bindgen::Builder {
     builder
 }
 
+fn cargo_target_uses_static_crt() -> bool {
+    env::var("CARGO_CFG_TARGET_FEATURE")
+        .unwrap_or_default()
+        .split(',')
+        .any(|feature| feature == "crt-static")
+}
+
+fn append_encoded_rustflags(command: &mut Command, encoded: OsString) {
+    for flag in encoded
+        .to_string_lossy()
+        .split('\x1f')
+        .filter(|flag| !flag.is_empty())
+    {
+        command.arg(flag);
+    }
+}
+
+fn rustc_target_cfg() -> Option<String> {
+    let rustc = env::var_os("RUSTC")?;
+    let target = env::var_os("TARGET")?;
+    let mut command = Command::new(rustc);
+    command.arg("--print=cfg").arg("--target").arg(target);
+
+    if let Some(encoded) = env::var_os("CARGO_ENCODED_RUSTFLAGS") {
+        append_encoded_rustflags(&mut command, encoded);
+    }
+
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8(output.stdout).ok()
+}
+
+fn target_uses_static_crt() -> bool {
+    if cargo_target_uses_static_crt() {
+        return true;
+    }
+
+    rustc_target_cfg()
+        .map(|cfg| {
+            cfg.lines()
+                .any(|line| line == r#"target_feature="crt-static""#)
+        })
+        .unwrap_or(false)
+}
+
 fn main() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
     let vendored_build = env::var_os("CARGO_FEATURE_VENDORED").is_some();
+    let static_link = vendored_build && target_uses_static_crt();
 
     // don't run cmake if running for docs.rs
     if env::var("DOCS_RS").is_ok() {
@@ -72,6 +123,9 @@ fn main() {
             }
         }
         true => {
+            let ubox_target = if static_link { "ubox-static" } else { "ubox" };
+            let uci_target = if static_link { "uci-static" } else { "uci" };
+            let build_static = if static_link { "ON" } else { "OFF" };
             let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
             let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
@@ -97,7 +151,7 @@ fn main() {
                 .out_dir(&libubox_out)
                 .define("BUILD_LUA", "OFF")
                 .define("BUILD_EXAMPLES", "OFF")
-                .build_target("ubox")
+                .build_target(ubox_target)
                 .env("PKG_CONFIG_PATH", "")
                 .env("PKG_CONFIG_LIBDIR", &json_c_pkgconfig_dir)
                 .env("PKG_CONFIG_SYSROOT_DIR", "")
@@ -105,25 +159,29 @@ fn main() {
                 .env("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
                 .build();
 
+            let libuci_source = manifest_dir.join("uci");
             let libuci_out = out_dir.join("libuci");
-            let libuci = cmake::Config::new(manifest_dir.join("uci"))
+            let libuci_build = libuci_out.join("build");
+            cmake::Config::new(&libuci_source)
                 .out_dir(&libuci_out)
                 .define("BUILD_LUA", "OFF")
-                .define("BUILD_STATIC", "OFF")
+                .define("BUILD_STATIC", build_static)
+                .build_target(uci_target)
                 .define("ubox_include_dir", &manifest_dir)
                 .define("CMAKE_LIBRARY_PATH", &libubox_build)
                 .build();
 
             println!("cargo:rustc-link-search=native={}", libubox_build.display());
-            println!("cargo:rustc-link-search=native={}/lib", libuci.display());
+            println!("cargo:rustc-link-search=native={}", libuci_build.display());
 
-            builder = builder.clang_arg(format!("-I{}/include", libuci.display()));
+            builder = builder.clang_arg(format!("-I{}", libuci_source.display()));
         }
     }
 
     // Link to libuci and libubox
-    println!("cargo:rustc-link-lib=dylib=uci");
-    println!("cargo:rustc-link-lib=dylib=ubox");
+    let link_kind = if static_link { "static" } else { "dylib" };
+    println!("cargo:rustc-link-lib={link_kind}=uci");
+    println!("cargo:rustc-link-lib={link_kind}=ubox");
 
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=wrapper.h");
