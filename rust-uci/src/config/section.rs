@@ -73,6 +73,24 @@ impl From<()> for SectionIdent<String> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SectionSelector<'a> {
+    Named(&'a str),
+    Anonymous { section_type: &'a str, index: i32 },
+}
+
+impl fmt::Display for SectionSelector<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Named(name) => f.write_str(name),
+            Self::Anonymous {
+                section_type,
+                index,
+            } => write!(f, "@{section_type}[{index}]"),
+        }
+    }
+}
+
 /// represents a single section
 /// parent to different [Option]s
 pub struct Section {
@@ -173,10 +191,35 @@ impl Section {
         Ok(())
     }
 
-    /// returns the name of the section item, None if it's anonymous
-    pub fn name(&self) -> StdOption<String> {
-        let ident = self.ident.as_ref().inner_ident(self.type_.as_ref());
-        ident.map(|cstr| cstr.into_string().unwrap())
+    /// Returns the explicit name of a named section.
+    ///
+    /// Anonymous sections, including sections addressed by `@type[index]`,
+    /// return `None`.
+    pub fn name(&self) -> StdOption<&str> {
+        match self.ident.as_ref() {
+            SectionIdent::Named(name) => Some(
+                name.to_str()
+                    .expect("UCI section names must be valid UTF-8"),
+            ),
+            SectionIdent::Anonymous | SectionIdent::Indexed(_) => None,
+        }
+    }
+
+    /// Returns the canonical selector for an existing section.
+    ///
+    /// A not-yet-created anonymous section has no selector yet and returns `None`.
+    pub fn selector(&self) -> StdOption<SectionSelector<'_>> {
+        match self.ident.as_ref() {
+            SectionIdent::Anonymous => None,
+            SectionIdent::Indexed(index) => Some(SectionSelector::Anonymous {
+                section_type: self.type_(),
+                index: *index,
+            }),
+            SectionIdent::Named(name) => Some(SectionSelector::Named(
+                name.to_str()
+                    .expect("UCI section names must be valid UTF-8"),
+            )),
+        }
     }
 
     /// returns the type of the section

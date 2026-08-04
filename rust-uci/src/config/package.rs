@@ -50,33 +50,52 @@ impl Package {
         }
     }
 
-    fn sections_impl<F: FnMut(&*const uci_element) -> bool>(
-        &self,
-        filter: F,
-    ) -> Result<impl Iterator<Item = Section>> {
+    fn sections_impl(&self) -> Result<impl Iterator<Item = Section>> {
         let mut uci = self.uci.lock().unwrap();
+
         let ptr = match self.ptr_opt(&mut uci)? {
             Some(ptr) => unsafe { &(*ptr.p).sections },
             None => ptr::null(),
         };
+
         drop(uci);
+
         let uci = Arc::clone(&self.uci);
         let package = Arc::clone(&self.name);
-        Ok(UciListIter::new(ptr).filter(filter).map(move |elem| {
-            let sect = unsafe { uci_to_section(elem) };
-            let type_ = unsafe { CStr::from_ptr((*sect).type_) }.to_owned();
-            let name = unsafe { CStr::from_ptr((*elem).name) }.to_owned();
+
+        // Anonymous section indexes are counted independently for each section
+        // type, matching UCI's @type[index] selector semantics.
+        let mut anonymous_indices = HashMap::<Vec<u8>, i32>::new();
+
+        Ok(UciListIter::new(ptr).map(move |elem| {
+            let section = unsafe { uci_to_section(elem) };
+            let type_ = unsafe { CStr::from_ptr((*section).type_) }.to_owned();
+
+            let ident = if unsafe { (*section).anonymous } {
+                let next_index = anonymous_indices
+                    .entry(type_.as_bytes().to_vec())
+                    .or_default();
+
+                let ident = SectionIdent::Indexed(*next_index);
+                *next_index += 1;
+
+                ident
+            } else {
+                let name = unsafe { CStr::from_ptr((*elem).name) }.to_owned();
+                SectionIdent::Named(name)
+            };
+
             Section::new(
                 Arc::clone(&uci),
                 Arc::clone(&package),
                 Arc::new(type_),
-                Arc::new(SectionIdent::Named(name)),
+                Arc::new(ident),
             )
         }))
     }
 
     pub fn sections(&self) -> Result<impl Iterator<Item = Section>> {
-        self.sections_impl(|_| true)
+        self.sections_impl()
     }
 
     pub fn sections_by_type(
@@ -84,10 +103,10 @@ impl Package {
         type_: impl AsRef<str>,
     ) -> Result<impl Iterator<Item = Section>> {
         let type_ = CString::new(type_.as_ref())?;
-        self.sections_impl(move |e| {
-            let elem_type = unsafe { CStr::from_ptr((*uci_to_section(*e)).type_) };
-            elem_type == type_.as_c_str()
-        })
+
+        Ok(self
+            .sections_impl()?
+            .filter(move |section| section.type_().as_bytes() == type_.as_bytes()))
     }
 
     /// return a single [Section] by its name
