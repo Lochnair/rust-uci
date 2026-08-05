@@ -20,7 +20,7 @@ pub use package::Package;
 mod ptr;
 
 mod section;
-pub use section::{Section, SectionIdent};
+pub use section::{Section, SectionIdent, SectionSelector};
 
 /// represents the root of the config tree
 /// It's the parent structure to [Package]s
