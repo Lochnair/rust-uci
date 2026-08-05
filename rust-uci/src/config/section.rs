@@ -228,7 +228,7 @@ impl Section {
     }
 
     /// lists all options in this section
-    pub fn options(&self) -> Result<Vec<Item = OptionMut>> {
+    pub fn options(&self) -> Result<Vec<OptionMut>> {
         let mut uci = self.uci.lock().unwrap();
 
         let Some(section_ptr) = self.ptr(&mut uci)? else {
