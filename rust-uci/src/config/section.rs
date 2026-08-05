@@ -1,6 +1,6 @@
 use std::{
     ffi::{CStr, CString},
-    iter,
+    fmt, iter,
     ops::DerefMut,
     option::Option as StdOption,
     ptr,

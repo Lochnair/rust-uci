@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ffi::{CStr, CString},
     option::Option as StdOption,
     ptr,
