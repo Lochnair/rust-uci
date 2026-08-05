@@ -228,26 +228,29 @@ impl Section {
     }
 
     /// lists all options in this section
-    pub fn options(&self) -> Result<impl Iterator<Item = OptionMut>> {
+    pub fn options(&self) -> Result<Vec<Item = OptionMut>> {
         let mut uci = self.uci.lock().unwrap();
-        let section = self.ptr(&mut uci)?.map(|p| unsafe { *p.s });
-        let option_list = section
-            .map(|l| &raw const l.options)
-            .unwrap_or_else(ptr::null);
 
-        let uci = Arc::clone(&self.uci);
-        let package = Arc::clone(&self.package);
-        let section_type = Arc::clone(&self.type_);
-        let section_ident = Arc::clone(&self.ident);
-        Ok(UciListIter::new(option_list).map(move |elem| {
+        let Some(section_ptr) = self.ptr(&mut uci)? else {
+            return Ok(Vec::new());
+        };
+
+        let option_list = unsafe { &raw const (*section_ptr.s).options };
+
+        let mut options = Vec::new();
+
+        for elem in UciListIter::new(option_list) {
             let name = unsafe { CStr::from_ptr((*elem).name) }.to_owned();
-            Option::new(
-                Arc::clone(&uci),
-                Arc::clone(&package),
-                (Arc::clone(&section_type), Arc::clone(&section_ident)),
+
+            options.push(Option::new(
+                Arc::clone(&self.uci),
+                Arc::clone(&self.package),
+                (Arc::clone(&self.type_), Arc::clone(&self.ident)),
                 Arc::new(name),
-            )
-        }))
+            ));
+        }
+
+        Ok(options)
     }
 
     /// returns a specific [Option] by name
