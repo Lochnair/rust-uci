@@ -402,12 +402,76 @@ mod tests {
         for section in &sections {
             assert_eq!("wifi-device", section.type_());
             let channel = section.option("channel").unwrap().get().unwrap().unwrap();
-            match section.name().unwrap().as_str() {
-                "pdev0" => assert_eq!(Value::String("auto".into()), channel),
-                "pdev1" => assert_eq!(Value::List(vec!["44".into(), "48".into()]), channel),
+            match section.name() {
+                Some("pdev0") => assert_eq!(Value::String("auto".into()), channel),
+                Some("pdev1") => assert_eq!(Value::List(vec!["44".into(), "48".into()]), channel),
                 _ => assert_eq!(Value::String("56".into()), channel),
             }
         }
+    }
+
+    #[test]
+    fn mixed_sections_keep_type_indices_and_options() {
+        let (uci, tmp) = setup_uci().unwrap();
+        std::fs::write(
+            tmp.path().join("config/mixed"),
+            "
+            config device 'first'
+                option value 'named-first'
+            config iface
+                option value 'other-type'
+            config device
+                option value 'anonymous-middle'
+            config device 'middle'
+                option value 'named-middle'
+            config iface 'other'
+                option value 'named-other-type'
+            config device
+                option value 'anonymous-last'
+            ",
+        )
+        .unwrap();
+
+        let cfg = Config::from(uci);
+        let pkg = cfg.package("mixed").unwrap().unwrap();
+        let read = |section: Section| {
+            let selector = section.selector().unwrap().to_string();
+            let value = section.option("value").unwrap().get().unwrap().unwrap();
+            let options = section.options().unwrap();
+            assert_eq!(options.len(), 1);
+            assert_eq!(options[0].name(), "value");
+            assert_eq!(options[0].get().unwrap().unwrap(), value);
+            (selector, value)
+        };
+        let all: Vec<_> = pkg.sections().unwrap().map(read).collect();
+        let expected = vec![
+            ("first".to_owned(), Value::String("named-first".into())),
+            ("@iface[0]".to_owned(), Value::String("other-type".into())),
+            (
+                "@device[1]".to_owned(),
+                Value::String("anonymous-middle".into()),
+            ),
+            ("middle".to_owned(), Value::String("named-middle".into())),
+            ("other".to_owned(), Value::String("named-other-type".into())),
+            (
+                "@device[3]".to_owned(),
+                Value::String("anonymous-last".into()),
+            ),
+        ];
+        assert_eq!(all, expected);
+        let devices: Vec<_> = pkg.sections_by_type("device").unwrap().map(read).collect();
+        assert_eq!(
+            devices,
+            expected
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, value)| if matches!(index, 0 | 2 | 3 | 5) {
+                    Some(value)
+                } else {
+                    None
+                })
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -64,27 +64,24 @@ impl Package {
         let uci = Arc::clone(&self.uci);
         let package = Arc::clone(&self.name);
 
-        // Anonymous section indexes are counted independently for each section
-        // type, matching UCI's @type[index] selector semantics.
-        let mut anonymous_indices = HashMap::<Vec<u8>, i32>::new();
+        // UCI @type[index] selectors count all sections of that type,
+        // including named sections.
+        let mut section_indices = HashMap::<Vec<u8>, i32>::new();
 
         Ok(UciListIter::new(ptr).map(move |elem| {
             let section = unsafe { uci_to_section(elem) };
             let type_ = unsafe { CStr::from_ptr((*section).type_) }.to_owned();
 
+            let next_index = section_indices
+                .entry(type_.as_bytes().to_vec())
+                .or_default();
             let ident = if unsafe { (*section).anonymous } {
-                let next_index = anonymous_indices
-                    .entry(type_.as_bytes().to_vec())
-                    .or_default();
-
-                let ident = SectionIdent::Indexed(*next_index);
-                *next_index += 1;
-
-                ident
+                SectionIdent::Indexed(*next_index)
             } else {
                 let name = unsafe { CStr::from_ptr((*elem).name) }.to_owned();
                 SectionIdent::Named(name)
             };
+            *next_index += 1;
 
             Section::new(
                 Arc::clone(&uci),
